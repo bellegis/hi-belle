@@ -205,6 +205,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:32px;border-radius:7px;bor
 .vz-lbl{width:46px;flex:none;font:700 11px var(--mono);letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)}
 .vz-opts{gap:8px}
 .opt{flex:1;height:44px;font:700 14px var(--ui)}
+.vz-note{font:400 11.5px/1.35 var(--mono);color:var(--muted);margin-top:-4px}
 .vz-tr{justify-content:center;gap:10px}
 .vz-tr .ctl{height:48px}
 .vz-tr #vzplay{width:84px;border-radius:16px;color:#fff;border:1px solid #0b1450;background:linear-gradient(#2a4fd0,#16237a);box-shadow:0 2px 0 #0b1450}
@@ -284,6 +285,8 @@ input[type=range]::-moz-range-thumb{width:18px;height:32px;border-radius:7px;bor
     <div class="vz-row"><div class="vz-colors" id="vzcolors"></div></div>
     <div class="vz-row"><span class="vz-lbl">Gain</span><input id="vzsens" type="range" min="0" max="100" value="49" aria-label="Visualizer gain"></div>
     <div class="vz-row vz-opts"><button class="opt btn" id="vzauto"></button><button class="opt btn" id="vztitleopt"></button><button class="opt btn" id="vzq"></button></div>
+    <div class="vz-row" id="vzliverow" hidden><button class="opt btn" id="vzlive"></button></div>
+    <div class="vz-note" id="vzlivenote" hidden>Follows the music on this browser. It may pause when the screen locks.</div>
     <div class="vz-row vz-tr">
       <button class="ctl btn" id="vzprev" aria-label="Previous song"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5h3v14H5zM20 5v14L9 12z"/></svg></button>
       <button class="ctl btn" id="vzplay" aria-label="Play or pause">
@@ -828,7 +831,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
   };
   const vz = {
     cors: null, corsLoad: false, retried: -1, prime(){}, onLoadError(){ return false; }, probe(){},
-    open: false, mode: 0, pal: -1, sens: 1, gain: 0.494, speed: 0.5, speedCur: 0.5, auto: 0, title: true, q: 1, autoP: 0, autoGoal: 0, cp: {h0: 310, h1: 170, s: 100, l0: 52, l1: 66},
+    open: false, mode: 0, pal: -1, sens: 1, live: false, srcNode: null, liveTries: 0, gain: 0.494, speed: 0.5, speedCur: 0.5, auto: 0, title: true, q: 1, autoP: 0, autoGoal: 0, cp: {h0: 310, h1: 170, s: 100, l0: 52, l1: 66},
     ctx: null, an: null, node: null, attached: '', silent: 0, real: false,
     bands: new Float32Array(48), wave: new Float32Array(128),
     bass: 0, mid: 0, treb: 0, energy: 0, beat: 0, avgBass: 0, lastBeat: 0,
@@ -1158,6 +1161,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     const fdata = new Uint8Array(256), tdata = new Uint8Array(512);
     const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
 
+    const canLive = !(audio.captureStream || audio.mozCaptureStream) && !!(window.AudioContext || window.webkitAudioContext);
     try {
       const o = JSON.parse(localStorage.getItem('songs.viz.v2') || localStorage.getItem('songs.viz.v1'));
       if (o){
@@ -1168,6 +1172,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
         if (o.gain >= 0 && o.gain <= 1) vz.gain = +o.gain;
         if (o.auto >= 0 && o.auto <= 2) vz.auto = o.auto | 0;
         if (typeof o.title === 'boolean') vz.title = o.title;
+        if (canLive && o.live === true) vz.live = true;
         if (o.q === 0 || o.q === 1) vz.q = o.q;
       }
     } catch (_) {}
@@ -1177,7 +1182,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     }
     applyGain(); vz.speedCur = vz.speed;
     function persist(){
-      try { localStorage.setItem('songs.viz.v2', JSON.stringify({mode: VZ_MODES[vz.mode], pal: vz.pal, gain: vz.gain, auto: vz.auto, title: vz.title, q: vz.q})); } catch (_) {}
+      try { localStorage.setItem('songs.viz.v2', JSON.stringify({mode: VZ_MODES[vz.mode], pal: vz.pal, gain: vz.gain, live: vz.live, auto: vz.auto, title: vz.title, q: vz.q})); } catch (_) {}
     }
 
     /* colors: a chosen palette, or Auto, which rotates through all of them */
@@ -1214,10 +1219,12 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       try {
+        if (vz.live && navigator.audioSession){ try { navigator.audioSession.type = 'playback'; } catch (_) {} }
         vz.ctx = new AC();
         vz.an = vz.ctx.createAnalyser(); vz.an.fftSize = 512; vz.an.smoothingTimeConstant = 0.55;
         const sink = vz.ctx.createGain(); sink.gain.value = 0;
         vz.an.connect(sink); sink.connect(vz.ctx.destination);
+        if (vz.live) vz.an.connect(vz.ctx.destination);        // live mode: the music itself plays through the analyser
       } catch (_) { vz.ctx = null; vz.an = null; }
     }
     vz.prime = () => {
@@ -1225,8 +1232,20 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
       ensureCtx();
       if (vz.ctx && vz.ctx.state === 'suspended') vz.ctx.resume().catch(() => {});
     };
+    function attachLive(){         // route the audio element through Web Audio; only when the audio is readable and the context is running
+      if (vz.srcNode || !vz.corsLoad || !vz.ctx) return;
+      if (vz.ctx.state !== 'running'){ if (vz.liveTries++ < 3) vz.ctx.resume().then(attachLive).catch(() => {}); return; }
+      try {
+        vz.srcNode = vz.ctx.createMediaElementSource(audio);
+        vz.srcNode.connect(vz.an);
+        vz.node = vz.srcNode; vz.silent = 0;
+        vz.ctx.onstatechange = () => { if (vz.ctx.state !== 'running' && !audio.paused) vz.ctx.resume().catch(() => {}); };
+      } catch (_) {}
+    }
     function attach(){
-      if (!vz.ctx || !vz.an || audio.currentSrc === vz.attached) return;
+      if (!vz.ctx || !vz.an) return;
+      if (vz.live) return attachLive();
+      if (audio.currentSrc === vz.attached) return;
       const cap = audio.captureStream || audio.mozCaptureStream;
       if (!cap) return;
       try {
@@ -1240,6 +1259,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     }
     vz.onLoadError = () => {
       if (!vz.corsLoad || vz.retried === st.cur) return false;
+      if (vz.srcNode){ vz.live = false; persist(); save(); toast('Live music turned off'); setTimeout(() => location.reload(), 700); return true; }   // audio already routed through Web Audio: reload without it
       vz.retried = st.cur; vz.cors = false; vz.corsLoad = false;
       playAt(st.queue.pos, true, audio.currentTime || 0);
       return true;
@@ -1713,7 +1733,11 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     }
     function kick(){ if (!vz.raf && !document.hidden){ vz.last = 0; vz.raf = requestAnimationFrame(frame); } }
     audio.addEventListener('playing', () => { if (vz.corsLoad && vz.open){ vz.prime(); attach(); } });
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) kick(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      kick();
+      if (vz.srcNode && vz.ctx && vz.ctx.state !== 'running' && !audio.paused) vz.ctx.resume().catch(() => {});
+    });
 
     /* controls */
     const panel = $('#vzpanel'), top = $('#vztop');
@@ -1740,6 +1764,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
       $('#vzauto').textContent = AUTO[vz.auto];
       $('#vztitleopt').textContent = 'Title: ' + (vz.title ? 'On' : 'Off');
       $('#vzq').textContent = 'Detail: ' + (vz.q ? 'High' : 'Low');
+      $('#vzlive').textContent = 'Live music: ' + (vz.live ? 'On' : 'Off');
       const sens = $('#vzsens'); sens.value = Math.round(vz.gain * 100); sens.style.setProperty('--p', sens.value + '%');
       $('#vzplay').classList.toggle('playing', !audio.paused);
       const on = modesEl.children[vz.mode]; if (on && vz.open && on.scrollIntoView) { try { on.scrollIntoView({inline: 'center', block: 'nearest'}); } catch (_) {} }
@@ -1762,6 +1787,8 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     audio.addEventListener('loadstart', () => { vz.autoGoal += 1; if (vz.auto === 1 && vz.open) nextMode(1); announce(); });
     ['play', 'pause'].forEach(ev => audio.addEventListener(ev, () => $('#vzplay').classList.toggle('playing', !audio.paused)));
 
+    if (canLive){ $('#vzliverow').hidden = false; $('#vzlivenote').hidden = false; }
+    $('#vzlive').onclick = () => { vz.live = !vz.live; persist(); save(); toast(vz.live ? 'Turning live music on…' : 'Turning live music off…'); setTimeout(() => location.reload(), 500); };
     $('#vzauto').onclick = () => { vz.auto = (vz.auto + 1) % 3; vz.autoT = 0; persist(); syncUI(); poke(); };
     $('#vztitleopt').onclick = () => { vz.title = !vz.title; persist(); syncUI(); if (vz.title) announce(); else $('#vztitle').classList.remove('show'); poke(); };
     $('#vzq').onclick = () => { vz.q = vz.q ? 0 : 1; persist(); sizeCanvas(); vz.s = {}; syncUI(); poke(); };
