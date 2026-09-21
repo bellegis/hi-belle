@@ -1,0 +1,60 @@
+name: Update song list
+
+on:
+  schedule:
+    - cron: '17 9 * * *'      
+  workflow_dispatch:           
+
+permissions:
+  contents: write
+
+env:
+  BUCKET: belle-music    
+  REGION: us-east-1          
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install boto3
+
+      - name: Build the song list from the bucket
+        env:
+          WASABI_ACCESS_KEY: ${{ secrets.WASABI_ACCESS_KEY }}
+          WASABI_SECRET_KEY: ${{ secrets.WASABI_SECRET_KEY }}
+        run: python build_index.py --bucket "$BUCKET" --region "$REGION" --out songs.json
+
+      - name: Publish only if the songs changed
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          new = json.load(open('songs.json'))['keys']
+          try:
+              old = json.loads(subprocess.check_output(['git', 'show', 'HEAD:songs.json']))['keys']
+          except Exception:
+              old = None
+          if old == new:
+              subprocess.call(['git', 'checkout', '--', 'songs.json'])
+              print('no new or removed songs')
+          else:
+              print('songs changed:', (len(old) if old else 0), '->', len(new))
+          PY
+          git config user.name "song-list-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add songs.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update song list"
+            git push origin HEAD
+          else
+            last=$(git log -1 --format=%ct); now=$(date +%s)
+            if [ $((now - last)) -gt $((40 * 86400)) ]; then
+              git commit --allow-empty -m "Keep scheduled updates active"
+              git push origin HEAD
+            fi
+          fi
