@@ -282,7 +282,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:32px;border-radius:7px;bor
   <div class="vz-panel" id="vzpanel">
     <div class="vz-modes" id="vzmodes"></div>
     <div class="vz-row"><div class="vz-colors" id="vzcolors"></div></div>
-    <div class="vz-row"><span class="vz-lbl">Gain</span><input id="vzsens" type="range" min="40" max="250" value="100" aria-label="Visualizer sensitivity"></div>
+    <div class="vz-row"><span class="vz-lbl">Gain</span><input id="vzsens" type="range" min="0" max="100" value="49" aria-label="Visualizer gain"></div>
     <div class="vz-row vz-opts"><button class="opt btn" id="vzauto"></button><button class="opt btn" id="vztitleopt"></button><button class="opt btn" id="vzq"></button></div>
     <div class="vz-row vz-tr">
       <button class="ctl btn" id="vzprev" aria-label="Previous song"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5h3v14H5zM20 5v14L9 12z"/></svg></button>
@@ -828,11 +828,11 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
   };
   const vz = {
     cors: null, corsLoad: false, retried: -1, prime(){}, onLoadError(){ return false; }, probe(){},
-    open: false, mode: 0, pal: -1, sens: 1, auto: 0, title: true, q: 1, autoP: 0, autoGoal: 0, cp: {h0: 310, h1: 170, s: 100, l0: 52, l1: 66},
+    open: false, mode: 0, pal: -1, sens: 1, gain: 0.494, speed: 0.5, speedCur: 0.5, auto: 0, title: true, q: 1, autoP: 0, autoGoal: 0, cp: {h0: 310, h1: 170, s: 100, l0: 52, l1: 66},
     ctx: null, an: null, node: null, attached: '', silent: 0, real: false,
     bands: new Float32Array(48), wave: new Float32Array(128),
     bass: 0, mid: 0, treb: 0, energy: 0, beat: 0, avgBass: 0, lastBeat: 0,
-    simT: 0, simE: 0, t: 0, last: 0, raf: 0, s: {}, autoT: 0, panelT: 0, panelOn: false, pushed: false
+    simT: 0, simE: 0, t: 0, rt: 0, last: 0, raf: 0, s: {}, autoT: 0, panelT: 0, panelOn: false, pushed: false
   };
 
   /* toast */
@@ -1165,14 +1165,19 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
         const mi = VZ_MODES.indexOf(name);
         vz.mode = mi >= 0 ? mi : 0;
         if (o.pal >= -1 && o.pal < VZ_PALS.length) vz.pal = o.pal | 0;
-        if (o.sens >= 0.4 && o.sens <= 2.5) vz.sens = +o.sens;
+        if (o.gain >= 0 && o.gain <= 1) vz.gain = +o.gain;
         if (o.auto >= 0 && o.auto <= 2) vz.auto = o.auto | 0;
         if (typeof o.title === 'boolean') vz.title = o.title;
         if (o.q === 0 || o.q === 1) vz.q = o.q;
       }
     } catch (_) {}
+    function applyGain(){        // gain 0..1 -> visual speed 0.1x..2.6x and audio sensitivity 0.4x..2.4x
+      vz.speed = 0.1 * Math.pow(26, vz.gain);
+      vz.sens = 0.4 * Math.pow(6, vz.gain);
+    }
+    applyGain(); vz.speedCur = vz.speed;
     function persist(){
-      try { localStorage.setItem('songs.viz.v2', JSON.stringify({mode: VZ_MODES[vz.mode], pal: vz.pal, sens: vz.sens, auto: vz.auto, title: vz.title, q: vz.q})); } catch (_) {}
+      try { localStorage.setItem('songs.viz.v2', JSON.stringify({mode: VZ_MODES[vz.mode], pal: vz.pal, gain: vz.gain, auto: vz.auto, title: vz.title, q: vz.q})); } catch (_) {}
     }
 
     /* colors: a chosen palette, or Auto, which rotates through all of them */
@@ -1181,7 +1186,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     function palParams(i){ const p = VZ_PALS[i], o = p.spin ? vz.t * 40 : 0; return {h0: p.h0 + o, h1: p.h1 + o, s: p.s, l0: p.l0, l1: p.l1}; }
     function updatePalette(dt){
       if (vz.pal >= 0){ vz.cp = palParams(vz.pal); return; }
-      vz.autoGoal += dt / 14;                                     // one palette every ~14 seconds
+      vz.autoGoal += dt / 20;                                     // one palette every ~20 seconds
       vz.autoP += (vz.autoGoal - vz.autoP) * Math.min(1, dt * 2);
       const n = VZ_PALS.length, i = Math.floor(vz.autoP), f = vz.autoP - i;
       const A = palParams(((i % n) + n) % n), B = palParams((((i + 1) % n) + n) % n);
@@ -1293,18 +1298,18 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
       vz.bass = b; vz.mid = m; vz.treb = tr; vz.energy = (b + m + tr) / 3;
       vz.avgBass += (b - vz.avgBass) * Math.min(1, dt * 2.5);
       vz.beat *= Math.pow(0.02, dt);
-      if (b > vz.avgBass * 1.3 + 0.06 && vz.t - vz.lastBeat > 0.24){ vz.beat = 1; vz.lastBeat = vz.t; }
+      if (b > vz.avgBass * 1.3 + 0.06 && vz.rt - vz.lastBeat > 0.24){ vz.beat = 1; vz.lastBeat = vz.rt; }
     }
 
     /* visualizations */
-    function dWarp(W, H){
+    function dWarp(W, H, dt){
       const s = vz.s;
       if (!s.buf){ s.buf = document.createElement('canvas'); s.buf.width = W; s.buf.height = H; s.bg = s.buf.getContext('2d'); }
-      const cx = W / 2, cy = H / 2, R = Math.min(W, H), zoom = 1.018 + vz.bass * 0.02;
+      const cx = W / 2, cy = H / 2, R = Math.min(W, H), k = dt * 60, zoom = 1 + (0.013 + vz.bass * 0.014) * k;
       g.globalCompositeOperation = 'source-over'; g.fillStyle = '#000008'; g.fillRect(0, 0, W, H);
-      g.save(); g.globalAlpha = 0.94; g.translate(cx, cy); g.rotate(0.006 + vz.beat * 0.012 + vz.mid * 0.01); g.scale(zoom, zoom); g.translate(-cx, -cy);
+      g.save(); g.globalAlpha = Math.pow(0.94, k); g.translate(cx, cy); g.rotate((0.005 + vz.beat * 0.008 + vz.mid * 0.007) * k); g.scale(zoom, zoom); g.translate(-cx, -cy);
       g.drawImage(s.buf, 0, 0); g.restore();
-      g.globalCompositeOperation = 'lighter'; g.lineJoin = 'round';
+      g.globalCompositeOperation = 'lighter'; g.lineJoin = 'round'; g.globalAlpha = Math.min(1, k / 0.5);      // each frame adds less when slow
       g.lineWidth = 2 + vz.bass * 5; g.strokeStyle = col((vz.t * 0.1) % 1, 0.9); g.beginPath();
       for (let i = 0; i <= 96; i++){
         const bi = i < 48 ? i : 96 - i, a = i / 96 * 6.2832 + vz.t * 0.3, r = R * (0.14 + vz.bands[bi] * 0.22);
@@ -1316,14 +1321,14 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
         const a = vz.t * (0.6 + k * 0.3) + k * 1.57, r = R * (0.25 + 0.08 * Math.sin(vz.t + k));
         g.fillStyle = col(k / 4 + 0.1, 0.9); g.beginPath(); g.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 3 + vz.treb * 10, 0, 6.2832); g.fill();
       }
-      g.globalCompositeOperation = 'source-over';
+      g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
       s.bg.clearRect(0, 0, W, H); s.bg.drawImage(cv, 0, 0);
     }
     function dStar(W, H, dt){
       const s = vz.s;
       if (!s.st){ s.st = []; for (let i = 0; i < 260; i++) s.st.push({x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, z: Math.random() * 0.98 + 0.02, pz: 1}); }
       g.fillStyle = 'rgba(0,0,8,0.32)'; g.fillRect(0, 0, W, H);
-      const cx = W / 2, cy = H / 2, sp = 0.28 + vz.bass * 1.5 + vz.beat, F = Math.max(W, H) * 0.28;
+      const cx = W / 2, cy = H / 2, sp = 0.3 + vz.bass * 0.7 + vz.beat * 0.4, F = Math.max(W, H) * 0.28;
       g.globalCompositeOperation = 'lighter'; g.lineCap = 'round';
       for (const o of s.st){
         o.pz = o.z; o.z -= dt * sp;
@@ -1339,14 +1344,15 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     function dRings(W, H, dt){
       g.globalCompositeOperation = 'source-over'; g.fillStyle = 'rgba(0,0,10,0.14)'; g.fillRect(0, 0, W, H);
       const s = vz.s, R = Math.min(W, H), rings = s.r || (s.r = []);
+      if (!s.seeded){ s.seeded = true; for (let i = 0; i < 16; i++) rings.push({r: R * (0.03 + i * 0.065), v: Math.random(), ph: Math.random() * 6.28, w: 2 + Math.floor(Math.random() * 4), big: false}); }
       const cx = W / 2 + Math.sin(vz.t * 0.31) * W * 0.07, cy = H * 0.46 + Math.cos(vz.t * 0.23) * H * 0.05;
-      s.acc = (s.acc || 0) + dt * (2.2 + vz.energy * 3);
+      s.acc = (s.acc || 0) + dt * (1.6 + vz.energy * 1.2);
       while (s.acc > 1){ s.acc -= 1; if (rings.length < 44) rings.push({r: R * 0.02, v: Math.random(), ph: Math.random() * 6.28, w: 2 + Math.floor(Math.random() * 4), big: false}); }
       if (vz.beat > 0.95 && rings.length < 44) rings.push({r: R * 0.02, v: (vz.t * 0.07) % 1, ph: Math.random() * 6.28, w: 3, big: true});
       g.globalCompositeOperation = 'lighter'; g.lineJoin = 'round';
       for (let i = rings.length - 1; i >= 0; i--){
         const o = rings[i];
-        o.r += dt * (R * 0.12 + o.r * (0.55 + vz.bass * 0.9));
+        o.r += dt * (R * 0.09 + o.r * (0.4 + vz.bass * 0.35));
         if (o.r > R * 1.15){ rings.splice(i, 1); continue; }
         const a = Math.min(1, Math.max(0, 1 - o.r / (R * 0.95)) * 1.4), wob = (0.05 + vz.mid * 0.1) * o.r;
         g.lineWidth = 1.5 + o.r * 0.05 * (o.big ? 1.6 : 1); g.strokeStyle = col(o.v + o.r / R * 0.4, a * 0.95);
@@ -1369,7 +1375,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
         s.buf = document.createElement('canvas'); s.buf.width = bw; s.buf.height = bh;
         s.bg = s.buf.getContext('2d'); s.bg.fillStyle = '#00000a'; s.bg.fillRect(0, 0, bw, bh); s.acc = 0;
       }
-      s.acc += dt * 55;
+      s.age = (s.age || 0) + dt; s.acc += dt * 38 * (1 + 5 * Math.max(0, 1 - s.age / 4));   // fast at first so the screen fills, then slow
       let rows = Math.floor(s.acc); s.acc -= rows;
       if (rows > 0){
         rows = Math.min(rows, 4);
@@ -1424,7 +1430,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
       const da = (((want - s.a + Math.PI) % TAU) + TAU) % TAU - Math.PI;
       s.a += da * Math.min(1, dt * 4.5);
       const corner = s.t > 0.35 && Math.abs((((a1 - a0 + Math.PI) % TAU) + TAU) % TAU - Math.PI) > 0.3;
-      const speed = (1.0 + vz.energy * 1.7 + vz.beat * 0.5) * (corner ? 0.55 : 1);
+      const speed = (0.9 + vz.energy * 0.9 + vz.beat * 0.2) * (corner ? 0.55 : 1);
       s.t += speed * dt; s.walk += speed * dt;
       if (s.t >= 1){
         s.t -= 1; s.fx = s.tx; s.fy = s.ty; s.tx = s.nx; s.ty = s.ny;
@@ -1479,7 +1485,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
         });
         s.h = []; s.acc = 0;
       }
-      const speed = R * (0.3 + vz.energy * 0.9 + vz.beat * 0.5);
+      const speed = R * (0.3 + vz.energy * 0.5 + vz.beat * 0.25);
       for (const pl of s.p) for (const q of pl.pts){
         q.x += q.vx * speed * dt; q.y += q.vy * speed * dt;
         if (q.x < 0){ q.x = 0; q.vx = Math.abs(q.vx); } else if (q.x > W){ q.x = W; q.vx = -Math.abs(q.vx); }
@@ -1505,11 +1511,11 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
 
     const tri = v => Math.abs(2 * (((v % 1) + 1) % 1) - 1);
 
-    function dGates(W, H, dt){                                   // ring gates placed along a curved path
+    function dGates(W, H, dt, rdt){                                   // ring gates placed along a curved path
       const s = vz.s, R = Math.min(W, H), t = vz.t, TAU = 6.2832;
       if (!s.m){ s.m = []; s.c = 0; s.flare = 0; for (let i = 0; i < 150; i++) s.m.push({z: Math.random() * 36, a: Math.random() * TAU, r: 0.8 + Math.random() * 3.6, v: Math.random()}); }
-      s.c += dt * (2.0 + vz.energy * 2.0);
-      s.flare = Math.max(s.flare - dt * 1.6, vz.beat > 0.95 ? 1 : 0);
+      s.c += dt * (1.6 + vz.energy * 1.0);
+      s.flare = Math.max(s.flare - rdt * 1.6, vz.beat > 0.95 ? 1 : 0);
       const px = z => 1.9 * Math.sin(z * 0.19) + 1.1 * Math.sin(z * 0.09 + 1.3), py = z => 1.0 * Math.sin(z * 0.14 + 2.1) + 0.5 * Math.sin(z * 0.27);
       const norm = v => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
       const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -1589,7 +1595,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
         return (HM[z0 * N + x0] * (1 - fx) + HM[z0 * N + x1] * fx) * (1 - fz) + (HM[z1 * N + x0] * (1 - fx) + HM[z1 * N + x1] * fx) * fz;
       };
       s.ph += dt;
-      const yaw = Math.sin(s.ph * 0.09) * 0.55 + Math.sin(s.ph * 0.041 + 1) * 0.35, spd = 6 + vz.energy * 12;      // heading changes slowly
+      const yaw = Math.sin(s.ph * 0.09) * 0.55 + Math.sin(s.ph * 0.041 + 1) * 0.35, spd = 5 + vz.energy * 6;      // heading changes slowly
       s.x += Math.sin(yaw) * spd * dt; s.z += Math.cos(yaw) * spd * dt;
       const hs = 46 * (1 + vz.bass * 0.1), want = Math.max(hAt(s.x, s.z) * hs + 26, 52) + Math.sin(s.ph * 0.3) * 5;
       s.cy += (want - s.cy) * Math.min(1, dt * 1.2);
@@ -1637,7 +1643,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
 
     function dOcean(W, H, dt){                                   // sky, sun and sea with perspective wave lines
       const s = vz.s, R = Math.min(W, H), t = vz.t, TAU = 6.2832;
-      s.ph = (s.ph || 0) + dt * (0.35 + vz.energy * 0.9);
+      s.ph = (s.ph || 0) + dt * (0.35 + vz.energy * 0.5);
       const hor = H * (0.42 + Math.sin(t * 0.11) * 0.012), sunX = W * (0.5 + Math.sin(t * 0.04) * 0.14), sunY = hor - R * 0.03;
       g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
       const sky = g.createLinearGradient(0, 0, 0, hor);
@@ -1694,11 +1700,13 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     function frame(ts){
       vz.raf = 0;
       const now = ts / 1000, dt = Math.min(0.05, vz.last ? now - vz.last : 0.016);
-      vz.last = now; vz.t += dt;
+      vz.last = now; vz.rt += dt;
+      vz.speedCur += (vz.speed - vz.speedCur) * Math.min(1, dt * 12);
+      const vdt = dt * vz.speedCur; vz.t += vdt;
       updatePalette(dt);
       sample(dt);
       if (vz.open){
-        DRAW[vz.mode](cv.width, cv.height, dt);
+        DRAW[vz.mode](cv.width, cv.height, vdt, dt);
         if (vz.auto === 2){ vz.autoT += dt; if (vz.autoT > 20) nextMode(1); }
       }
       if (vz.open && !document.hidden) vz.raf = requestAnimationFrame(frame);
@@ -1732,7 +1740,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
       $('#vzauto').textContent = AUTO[vz.auto];
       $('#vztitleopt').textContent = 'Title: ' + (vz.title ? 'On' : 'Off');
       $('#vzq').textContent = 'Detail: ' + (vz.q ? 'High' : 'Low');
-      const sens = $('#vzsens'); sens.value = Math.round(vz.sens * 100); sens.style.setProperty('--p', ((sens.value - 40) / 210 * 100) + '%');
+      const sens = $('#vzsens'); sens.value = Math.round(vz.gain * 100); sens.style.setProperty('--p', sens.value + '%');
       $('#vzplay').classList.toggle('playing', !audio.paused);
       const on = modesEl.children[vz.mode]; if (on && vz.open && on.scrollIntoView) { try { on.scrollIntoView({inline: 'center', block: 'nearest'}); } catch (_) {} }
     }
@@ -1757,7 +1765,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     $('#vzauto').onclick = () => { vz.auto = (vz.auto + 1) % 3; vz.autoT = 0; persist(); syncUI(); poke(); };
     $('#vztitleopt').onclick = () => { vz.title = !vz.title; persist(); syncUI(); if (vz.title) announce(); else $('#vztitle').classList.remove('show'); poke(); };
     $('#vzq').onclick = () => { vz.q = vz.q ? 0 : 1; persist(); sizeCanvas(); vz.s = {}; syncUI(); poke(); };
-    $('#vzsens').addEventListener('input', e => { vz.sens = e.target.value / 100; e.target.style.setProperty('--p', ((e.target.value - 40) / 210 * 100) + '%'); persist(); poke(); });
+    $('#vzsens').addEventListener('input', e => { vz.gain = e.target.value / 100; applyGain(); e.target.style.setProperty('--p', e.target.value + '%'); persist(); poke(); });
     $('#vzprev').onclick = () => { prev(); poke(); };
     $('#vznext').onclick = () => { next(); poke(); };
     $('#vzplay').onclick = () => { toggle(); poke(); };
