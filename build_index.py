@@ -42,6 +42,12 @@ AUDIO_EXT = {
 }
 # Extensions most browsers cannot decode (used only in the summary).
 CHROME_CANT_PLAY = {"wma", "ape", "mpc", "wv", "aif", "aiff", "aifc", "mka", "ra", "tta", "dsf", "dff", "ac3", "dts", "caf", "mid", "midi"}
+# Image extensions considered for album art.
+IMAGE_EXT = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
+# Words that, found anywhere in an image's file name, suggest it is album art rather than
+# some other picture (a band photo, a scan of the back cover, a booklet page). Checked in
+# order, so a name matching an earlier word wins when more than one matches.
+COVER_WORDS = ["cover", "folder", "albumart", "artwork", "front"]
 
 
 def list_bucket(bucket, region, endpoint, prefix):
@@ -87,6 +93,41 @@ def ext_of(key):
     return base[i + 1:].lower() if i > 0 else ""
 
 
+def folder_of(key):
+    return key.rsplit("/", 1)[0] + "/" if "/" in key else ""
+
+
+def pick_album_art(all_keys, kept):
+    """For every folder that has at least one kept song, find the one image in that same
+    folder most likely to be its cover art. Returns {folder: image_key}.
+
+    A folder gets an entry only when it has an image with a recognized cover-art name, or
+    exactly one image total (then that one is used even though its name is a guess).
+    A folder with several unlabeled images (concert photos, scans, a booklet's pages) is
+    left out rather than picking one of them at random."""
+    images_by_folder = {}
+    for key in all_keys:
+        ext = ext_of(key)
+        if ext not in IMAGE_EXT:
+            continue
+        base = key.rsplit("/", 1)[-1]
+        stem = base[:base.rfind(".")].lower() if "." in base else base.lower()
+        rank = next((i for i, w in enumerate(COVER_WORDS) if w in stem), len(COVER_WORDS))
+        images_by_folder.setdefault(folder_of(key), []).append((rank, base.lower(), key))
+
+    folders_with_songs = {folder_of(key) for key in kept}
+    art = {}
+    for folder in folders_with_songs:
+        options = images_by_folder.get(folder)
+        if not options:
+            continue
+        options.sort()
+        best = options[0]
+        if best[0] < len(COVER_WORDS) or len(options) == 1:
+            art[folder] = best[2]
+    return art
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bucket", required=True)
@@ -129,11 +170,12 @@ def main():
             left_out.append((key, f"not an audio file (.{ext_of(key)})"))
     kept = sorted(set(kept))
     assert len(kept) + len(left_out) >= len(set(all_keys)) - 0, "accounting error"
+    art = pick_album_art(all_keys, kept)
 
     out_dir = os.path.dirname(os.path.abspath(args.out))
 
     # ---- index ----
-    payload = {"v": 1, "generated": time.strftime("%Y-%m-%d %H:%M:%S"), "base": base, "count": len(kept), "keys": kept}
+    payload = {"v": 1, "generated": time.strftime("%Y-%m-%d %H:%M:%S"), "base": base, "count": len(kept), "keys": kept, "art": art}
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
     size_mb = os.path.getsize(args.out) / 1e6
@@ -177,6 +219,8 @@ def main():
     print("Folder depth of songs:    " + ", ".join(f"{d} levels: {c:,}" for d, c in sorted(depth.items())))
     tops = Counter(k.split("/", 1)[0] if "/" in k else "(loose in bucket root)" for k in kept)
     print(f"Top-level folders:        {len(tops):,}   (biggest: " + ", ".join(f"{n} [{c:,}]" for n, c in tops.most_common(5)) + ")")
+    folders_total = len({folder_of(k) for k in kept})
+    print(f"Album art matched:        {len(art):,} of {folders_total:,} folders that have songs.")
     print()
     print(f"Wrote {args.out}, {left_path}, {sample_path}")
 

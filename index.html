@@ -119,7 +119,10 @@ main{flex:1;min-height:0;position:relative}
 #player{flex:none;display:flex;flex-direction:column;gap:8px;padding:12px 12px calc(10px + env(safe-area-inset-bottom));
   background:#f6f7fb;border-radius:22px 22px 0 0;border-top:1px solid #fff;box-shadow:0 -6px 24px rgba(20,30,80,.14)}
 #np{position:relative;overflow:hidden;cursor:pointer;padding:8px 12px 7px;border-radius:14px;color:#56ff80;font-family:var(--lcd);
-  background:linear-gradient(#04140a,#010805);box-shadow:inset 0 0 0 1px #1c3d27,inset 0 2px 8px rgba(0,0,0,.8)}
+  background:linear-gradient(#04140a,#010805);box-shadow:inset 0 0 0 1px #1c3d27,inset 0 2px 8px rgba(0,0,0,.8);
+  display:flex;align-items:center;gap:10px}
+#npart{width:46px;height:46px;border-radius:8px;object-fit:cover;flex:none;box-shadow:0 0 0 1px #1c3d27,0 0 10px rgba(86,255,128,.3)}
+#nptext{flex:1;min-width:0;position:relative;z-index:1}
 #np::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(transparent 0 2px,rgba(0,0,0,.16) 2px 3px)}
 #npt{font-size:27px;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 0 8px rgba(86,255,128,.5)}
 #np .l2{display:flex;gap:12px;align-items:baseline;margin-top:3px;font-size:20px;line-height:1;color:#2fc95a}
@@ -262,8 +265,11 @@ input[type=range]::-moz-range-thumb{width:18px;height:32px;border-radius:7px;bor
 
   <footer id="player">
     <div id="np" role="button" tabindex="0" aria-label="Show playing song in list">
-      <div id="npt">Choose a song</div>
-      <div class="l2"><span id="nps"></span><span id="ltime"><span id="tcur">0:00</span> / <span id="tdur">--:--</span></span></div>
+      <img id="npart" alt="" hidden>
+      <div id="nptext">
+        <div id="npt">Choose a song</div>
+        <div class="l2"><span id="nps"></span><span id="ltime"><span id="tcur">0:00</span> / <span id="tdur">--:--</span></span></div>
+      </div>
     </div>
     <div class="seekrow">
       <input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Song position">
@@ -827,11 +833,13 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
   keys.sort();
   const n = keys.length;
   const base = data.base.endsWith('/') ? data.base : data.base + '/';
+  const art = data.art || {};
   const prep = prepare(keys);
   let sortMode = 'title';                // default sort mode
   try { if (localStorage.getItem('songs.sort') === 'file') sortMode = 'file'; } catch (_) {}
   let L = buildOrder(keys, sortMode, prep);
   const urlFor = idx => base + encodeKey(keys[idx]);
+  const artUrlFor = idx => { const a = art[keys[idx].replace(/[^/]*$/, '')]; return a ? base + encodeKey(a) : null; };
 
   /* file types the browser can decode */
   const EXT_MIME = {mp3:'audio/mpeg', mp2:'audio/mpeg', mp1:'audio/mpeg', m4a:'audio/mp4', m4b:'audio/mp4', m4p:'audio/mp4', aac:'audio/aac',
@@ -1036,9 +1044,13 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
 
   /* now playing */
   function updateNowPlaying(){
-    if (st.cur < 0){ $('#npt').textContent = 'Choose a song'; $('#nps').textContent = ''; return; }
+    const artEl = $('#npart');
+    if (st.cur < 0){ $('#npt').textContent = 'Choose a song'; $('#nps').textContent = ''; artEl.hidden = true; return; }
     $('#npt').textContent = noExt(L.names[st.cur]);
     $('#nps').textContent = dirPath(keys[st.cur]);
+    const au = artUrlFor(st.cur);
+    if (au){ artEl.onerror = () => { artEl.hidden = true; }; artEl.src = au; artEl.hidden = false; }
+    else artEl.hidden = true;
   }
   function locate(){
     if (st.cur < 0) return;
@@ -1103,11 +1115,14 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
   function setMeta(){
     if (!('mediaSession' in navigator) || st.cur < 0) return;
     const p = keys[st.cur].split('/'); p.pop();
+    const au = artUrlFor(st.cur), ext = au ? au.split('.').pop().toLowerCase() : '';
+    const mime = {jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp'}[ext];
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: noExt(L.names[st.cur]),        // file name without extension
         artist: p[0] || '',
-        album: p.length > 1 ? p[p.length - 1] : ''
+        album: p.length > 1 ? p[p.length - 1] : '',
+        artwork: au ? [{src: au, type: mime}] : []
       });
     } catch (_) {}
   }
