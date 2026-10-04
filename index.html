@@ -188,9 +188,11 @@ input[type=range]::-moz-range-thumb{width:18px;height:32px;border-radius:7px;bor
 @media (prefers-reduced-motion:reduce){#app.playing~#viz .vz-name::before{animation:none}}
 .vz-x{margin-left:auto;flex:none;width:52px;height:44px;display:flex;align-items:center;justify-content:center;font:400 30px/1 var(--ui);padding-bottom:3px}
 .vz-title{position:absolute;left:0;right:0;top:calc(92px + env(safe-area-inset-top));padding:0 18px;text-align:center;
-  font:400 30px/1.1 var(--lcd);color:#d2ffe0;text-shadow:0 0 14px rgba(0,0,0,.95),0 0 8px rgba(86,255,128,.6);
-  opacity:0;transition:opacity .6s;pointer-events:none;word-break:break-word}
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  opacity:0;transition:opacity .6s;pointer-events:none}
 .vz-title.show{opacity:1}
+#vztitletext{font:400 30px/1.1 var(--lcd);color:#d2ffe0;text-shadow:0 0 14px rgba(0,0,0,.95),0 0 8px rgba(86,255,128,.6);word-break:break-word}
+#vzart{width:64px;height:64px;border-radius:12px;object-fit:cover;box-shadow:0 10px 26px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.18)}
 /* control sheet */
 .vz-panel{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:10px;padding:12px 12px calc(10px + env(safe-area-inset-bottom));
   background:rgba(246,247,251,.97);color:var(--ink);border-radius:22px 22px 0 0;border-top:1px solid #fff;box-shadow:0 -6px 24px rgba(20,30,80,.28);
@@ -298,7 +300,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:32px;border-radius:7px;bor
     <span class="vz-name" id="vzname">Bars</span>
     <button class="vz-x btn" id="vzclose" aria-label="Close visualizer">×</button>
   </div>
-  <div class="vz-title" id="vztitle"></div>
+  <div class="vz-title" id="vztitle"><img id="vzart" alt="" hidden><div id="vztitletext"></div></div>
   <div class="vz-panel" id="vzpanel">
     <div class="vz-modes" id="vzmodes"></div>
     <div class="vz-row"><div class="vz-colors" id="vzcolors"></div></div>
@@ -1739,7 +1741,10 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
     function poke(){ showPanel(); clearTimeout(vz.panelT); vz.panelT = setTimeout(hidePanel, 6500); }
     function announce(){
       if (!vz.open || vz.titleMode === 'off' || st.cur < 0) return;
-      const t = $('#vztitle'); t.textContent = noExt(L.names[st.cur]); t.classList.add('show');
+      $('#vztitletext').textContent = noExt(L.names[st.cur]);
+      const artEl = $('#vzart'), au = artUrlFor(st.cur);
+      if (au){ artEl.onerror = () => { artEl.hidden = true; }; artEl.src = au; artEl.hidden = false; } else artEl.hidden = true;
+      $('#vztitle').classList.add('show');
     }
     audio.addEventListener('loadstart', () => { vz.autoGoal += 1; if (vz.auto === 1 && vz.open) nextMode(1); announce(); });
     ['play', 'pause'].forEach(ev => audio.addEventListener(ev, () => $('#vzplay').classList.toggle('playing', !audio.paused)));
